@@ -1,0 +1,7 @@
+.env
+football
+__pycache__
+.lightning_studio
+.vscode
+*.ipynb
+.idea
