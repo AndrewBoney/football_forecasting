@@ -1,11 +1,15 @@
 import polars as pl
+
 import math
 import sqlite3
-from datasets import Dataset
+import subprocess
+import tempfile
+import os
+import torch
 
-# Define Hugging Face repository configurations
-HF_REPO_ID = "YOUR_HF_REPO_ID"  # e.g., "username/football-dataset"
-HF_TOKEN = "YOUR_HF_TOKEN"      # Use your Hugging Face access token (or set up environment variable)
+from dotenv import load_dotenv
+from datasets import Dataset
+from huggingface_hub import HfApi, upload_file
 
 def load_fixture_data(db_path: str) -> pl.DataFrame:
     """Load fixture data from SQLite database and sort chronologically."""
@@ -71,9 +75,14 @@ def process_matches(
     """Process all matches to update ratings and return history."""
     history = []
     
+    nums = {id_ : 0 for id_ in attack_ratings.keys()}
     for row in df.iter_rows():
         (fixture_id, league_id, season, date, round_, 
          home_team_id, away_team_id, home_goals, away_goals) = row
+
+        # iterate nums
+        nums[home_team_id] += 1
+        nums[away_team_id] += 1
 
         # Get current ratings
         home_attack = attack_ratings[home_team_id]
@@ -102,7 +111,9 @@ def process_matches(
             "home_attack_rating": home_attack,
             "home_defense_rating": home_defense,
             "away_attack_rating": away_attack,
-            "away_defense_rating": away_defense
+            "away_defense_rating": away_defense,
+            "home_team_fixture_num" : nums[home_team_id],
+            "away_team_fixture_num" : nums[away_team_id]
         })
 
         # Update ratings based on match outcome
@@ -120,33 +131,146 @@ def process_matches(
     
     return history
 
-
-def push_dataset_to_huggingface(dataset_df: pl.DataFrame, repo_id: str, hf_token: str = None) -> None:
+def push_dataset_to_huggingface(
+    dataset_df: pl.DataFrame, 
+    repo_id: str,
+    filter_n_games: int = 20,
+    test_size: float = 0.2,
+    val_size: float = 0.1
+) -> None:
     """
     Convert a Polars DataFrame to a Hugging Face Dataset and push it to the Hub.
     
     Args:
         dataset_df (pl.DataFrame): The dataset to be uploaded.
         repo_id (str): The repository identifier (e.g., "username/dataset-name").
-        hf_token (str): Your Hugging Face access token.
+        filter_n_games (int): Remove games without n_games warmup. 
     """
-    # Convert Polars DataFrame to pandas
+    # Filter dataframe
+    dataset_df = dataset_df.filter(
+        pl.col("home_team_fixture_num") >= filter_n_games, 
+        pl.col("away_team_fixture_num") >= filter_n_games
+    )
+
+    # Convert Polars DataFrame to pandas DataFrame
     df_pandas = dataset_df.to_pandas()
     
     # Create a Hugging Face Dataset
     hf_dataset = Dataset.from_pandas(df_pandas)
     
-    # Push dataset to Hugging Face Hub
-    hf_dataset.push_to_hub(repo_id, token=hf_token)
-    print(f"Dataset successfully pushed to Hugging Face repository: {repo_id}")
+    train = hf_dataset.train_test_split(test_size = test_size + val_size, seed = 42)
+    test = train["test"].train_test_split(test_size = val_size / (val_size + test_size), seed = 42)
 
+    datasets = {
+        "train" : train["train"],
+        "test" : test["train"],
+        "val" : test["test"]
+    }
 
-def main():
-    """Main workflow executing the rating calculation process."""
-    # Configuration
-    DB_PATH = "football.db"
-    K = 0.05
-    HOME_ADVANTAGE = 0.1
+    for split, data in datasets.items():
+        # Push dataset to Hugging Face Hub
+        data.push_to_hub(repo_id, split = split)
+
+def get_git_info() -> str:
+    """
+    Get git commit info of the current working repository.
+    Returns a string containing the commit hash, branch name, and remote URL.
+    """
+    try:
+        # Get current commit hash
+        commit_hash = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8").strip()
+        
+        # Get current branch name
+        branch_name = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8").strip()
+        
+        # Get remote URL
+        remote_url = subprocess.check_output(
+            ["git", "config", "--get", "remote.origin.url"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8").strip()
+        
+        return f"Git commit: `{commit_hash}` (branch: `{branch_name}`) (remote: `{remote_url}`)"
+    except Exception:
+        return "Git info unavailable."
+
+def push_model_card(dataset_df: pl.DataFrame, repo_id: str, hf_token: str = None) -> None:
+    """
+    Create and push a model card (README.md) to the Hugging Face Hub repository.
+    
+    The model card will include:
+      - A description of the dataset.
+      - The leagues and time periods included in the dataset.
+      - The git info of the current working repository.
+    """
+    # Description of the dataset
+    description = (
+        "This dataset contains football fixtures with match details and the evolving ratings "
+        "of teams based on fixture outcomes. The ratings are updated using an exponential model."
+    )
+    
+    # Extract leagues and time periods from the dataset
+    leagues = sorted(set(dataset_df["league_id"].unique().to_list()))
+    try:
+        # Assuming date is stored in a sortable format (e.g., YYYY-MM-DD)
+        min_date = dataset_df["date"].min()
+        max_date = dataset_df["date"].max()
+    except Exception:
+        min_date, max_date = "N/A", "N/A"
+
+    # Git info from current repository
+    git_info = get_git_info()
+    
+    model_card = f"""# Football Ratings Dataset
+
+{description}
+
+## Leagues Included
+The dataset includes the following leagues:  
+{', '.join(str(l) for l in leagues)}
+
+## Time Period
+Data covers from **{min_date}** to **{max_date}**.
+
+## Git Repository Information
+{git_info}
+
+---
+
+This dataset is automatically generated using football match fixtures and updated ratings calculated using a simple exponential model.
+    """
+    
+    # Write the model card content to a temporary file and push it as README.md to the HF Hub.
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".md") as tmp:
+        tmp.write(model_card)
+        tmp_path = tmp.name
+
+    # Use the HF API to upload the file as README.md to the dataset repository
+    api = HfApi()
+    api.upload_file(
+        path_or_fileobj=tmp_path,
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        token=hf_token,
+        repo_type="dataset"
+    )
+    print("Model card (README.md) successfully pushed to the Hugging Face repository.")
+
+def prepare_and_push(
+    DB_PATH : str = "football.db",
+    K : float = 0.05,
+    HOME_ADVANTAGE : float = 0.1
+):
+    """Main workflow executing the rating calculation process and pushing to HF Hub."""
+    # Define Hugging Face repository configurations
+    load_dotenv()
+    HF_REPO_ID = "AndyB/football_fixtures"  # e.g., "username/football-dataset"
+    HF_TOKEN = os.getenv("HF_TOKEN")      # Your Hugging Face access token
 
     # Load and prepare data
     fixtures_df = load_fixture_data(DB_PATH)
@@ -165,12 +289,25 @@ def main():
     
     # Convert history to DataFrame for analysis
     history_df = pl.DataFrame(ratings_history)
-    
-    # Write dataset to Hugging Face Hub
-    push_dataset_to_huggingface(history_df, HF_REPO_ID, HF_TOKEN)
-    
-    return history_df
 
+    # Write dataset to Hugging Face Hub
+    push_dataset_to_huggingface(history_df, HF_REPO_ID)
+    
+    # Push model card (README.md) to Hugging Face Hub
+    push_model_card(history_df, HF_REPO_ID, HF_TOKEN)
+
+class FixturesLoader(torch.utils.data.Dataset):
+    def __init__(
+        self, 
+        HF_REPO_ID : str = "AndyB/football_fixtures"
+    ):
+        pass
+
+    def __len__(self):
+        pass
+
+    def __getitem__(self):
+        pass
 
 if __name__ == "__main__":
-    final_history = main()
+    prepare_and_push()

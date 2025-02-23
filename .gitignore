@@ -2,6 +2,8 @@
 football
 __pycache__
 .lightning_studio
+lightning_logs
 .vscode
 *.ipynb
 .idea
+.git-credentials
