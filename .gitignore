@@ -1,9 +1,16 @@
 .env
 football
 __pycache__
-.lightning_studio
-lightning_logs
 .vscode
 *.ipynb
+
+
+# lightning specific
+.lightning_studio
+lightning_logs
+.lesshst
+.cursor-server
+.vscode-server
+.windsurf-server
 .idea
 .git-credentials
