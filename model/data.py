@@ -261,17 +261,12 @@ This dataset is automatically generated using football match fixtures and update
     )
     print("Model card (README.md) successfully pushed to the Hugging Face repository.")
 
-def prepare_and_push(
-    DB_PATH : str = "football.db",
-    K : float = 0.05,
-    HOME_ADVANTAGE : float = 0.1
-):
-    """Main workflow executing the rating calculation process and pushing to HF Hub."""
-    # Define Hugging Face repository configurations
-    load_dotenv()
-    HF_REPO_ID = "AndyB/football_fixtures"  # e.g., "username/football-dataset"
-    HF_TOKEN = os.getenv("HF_TOKEN")      # Your Hugging Face access token
-
+def prepare(
+    DB_PATH: str = "football.db",
+    K: float = 0.05,
+    HOME_ADVANTAGE: float = 0.1
+) -> pl.DataFrame:
+    """Prepare the dataset by calculating ratings and history."""
     # Load and prepare data
     fixtures_df = load_fixture_data(DB_PATH)
     
@@ -289,25 +284,35 @@ def prepare_and_push(
     
     # Convert history to DataFrame for analysis
     history_df = pl.DataFrame(ratings_history)
+    return history_df
 
+
+def push(
+    history_df: pl.DataFrame,
+    HF_REPO_ID: str = "AndyB/football_fixtures",
+    HF_TOKEN: str = os.getenv("HF_TOKEN")
+) -> None:
+    """Push the dataset and model card to the Hugging Face Hub."""
     # Write dataset to Hugging Face Hub
     push_dataset_to_huggingface(history_df, HF_REPO_ID)
     
     # Push model card (README.md) to Hugging Face Hub
     push_model_card(history_df, HF_REPO_ID, HF_TOKEN)
 
-class FixturesLoader(torch.utils.data.Dataset):
-    def __init__(
-        self, 
-        HF_REPO_ID : str = "AndyB/football_fixtures"
-    ):
-        pass
 
-    def __len__(self):
-        pass
-
-    def __getitem__(self):
-        pass
+def prepare_and_push(
+    DB_PATH: str = "football.db",
+    K: float = 0.05,
+    HOME_ADVANTAGE: float = 0.1,
+    HF_REPO_ID: str = "AndyB/football_fixtures",
+    HF_TOKEN: str = os.getenv("HF_TOKEN")
+):
+    """Main workflow executing the rating calculation process and pushing to HF Hub."""
+    # Prepare the dataset
+    history_df = prepare(DB_PATH, K, HOME_ADVANTAGE)
+    
+    # Push the dataset and model card to Hugging Face Hub
+    push(history_df, HF_REPO_ID, HF_TOKEN)
 
 if __name__ == "__main__":
     prepare_and_push()

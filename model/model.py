@@ -1,13 +1,14 @@
-import torch
 import torch.nn as nn
 import torch.distributions as dist
+import lightning.pytorch as pl
+
+import torch
+
 from torch.utils.data import DataLoader
-import pytorch_lightning as pl
 from datasets import load_dataset
 from torchmetrics.functional import accuracy, precision, recall, f1_score
-# -------------------------
-# Define the Poisson module
-# -------------------------
+
+# Define the Poisson / ELO module
 class PoissonProbabilityModule(nn.Module):
     def __init__(self, max_goals: int = 10):
         """
