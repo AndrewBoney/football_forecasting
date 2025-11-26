@@ -39,9 +39,7 @@ class PoissonProbabilityModule(nn.Module):
         probabilities = torch.cat([probabilities, tail_prob], dim=1)
         return probabilities
 
-# -------------------------
-# Define the Lightning Module
-# -------------------------
+# Poisson Only
 class PoissonLightningModule(pl.LightningModule):
     def __init__(self, max_goals: int = 10, lr: float = 1e-3):
         """
@@ -196,41 +194,6 @@ class PoissonLightningModule(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
         return optimizer
-
-# -------------------------
-# Define the Data Module
-# -------------------------
-class FootballDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size: int = 32):
-        """
-        LightningDataModule for the AndyB/football_fixtures dataset.
-        
-        Args:
-            batch_size (int): How many samples per batch.
-        """
-        super().__init__()
-        self.batch_size = batch_size
-
-    def prepare_data(self):
-        # Download the dataset (only executed on 1 process)
-        load_dataset("AndyB/football_fixtures")
-
-    def setup(self, stage=None):
-        # Load the dataset and perform per-example processing.
-        self.dataset = load_dataset("AndyB/football_fixtures")
-
-        self.train_dataset = self.dataset["train"]
-        self.val_dataset = self.dataset["val"]
-        self.test_dataset = self.dataset["test"]
-
-    def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True)
-
-    def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size)
-
-    def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=self.batch_size)
 
 # -------------------------
 # Main training and evaluation script
