@@ -203,16 +203,6 @@ class PoissonModel(BaseModel):
 
     # configure_optimizers is provided by BaseModel
 
-class FeatureModel(BaseModel):
-    def __init__(
-        self,
-        n_dims : int, 
-        max_goals: int = 10, 
-        lr: float = 0.001
-    ):
-        super().__init__(max_goals, lr)
-
-        self.team_embeddings = nn.Embedding()
 
 # -------------------------
 # Main training and evaluation script

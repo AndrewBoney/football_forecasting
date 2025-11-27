@@ -6,21 +6,39 @@ import subprocess
 import tempfile
 import os
 
+from typing import Optional, List
 from datasets import Dataset
 from huggingface_hub import HfApi
 
-def load_fixture_data(db_path: str) -> pl.DataFrame:
-    """Load fixture data from SQLite database and sort chronologically."""
+
+def load_sqlite_data(query: str, db_path: str = 'football.db') -> pl.DataFrame:
+    """Load data from SQLite database using a SQL query."""
     with sqlite3.connect(db_path) as conn:
-        query = """
-            SELECT 
-                fixture_id, league_id, season, date, round, 
-                home_team_id, away_team_id, home_goals, away_goals
-            FROM fixtures
-        """
         df = pl.read_database(query, conn)
+    return df
+
+
+def load_fixture_data(cols: Optional[List[str]] = None, db_path: str = "football.db") -> pl.DataFrame:
+    """Load fixture data from SQLite database and sort chronologically."""
+    if cols:
+        cols_str = ", ".join(cols)
+        query = f"SELECT {cols_str} FROM fixtures"
+    else:
+        query = "SELECT * FROM fixtures"
+
+    df = load_sqlite_data(query, db_path)
     return df.sort("date")
 
+
+def load_team_data(db_path: str = "football.db", cols: Optional[List[str]] = None) -> pl.DataFrame:
+    """Load team data from SQLite database."""
+    if cols:
+        cols_str = ", ".join(cols)
+        query = f"SELECT {cols_str} FROM teams"
+    else:
+        query = "SELECT * FROM teams"
+    
+    return load_sqlite_data(query, db_path)
 
 def initialize_ratings(df: pl.DataFrame) -> tuple[dict, dict]:
     """Initialize attack and defense ratings for all teams."""
@@ -141,6 +159,59 @@ def add_date_columns(df: pl.DataFrame, date_col : str) -> pl.DataFrame:
         )            
     )
 
+def add_historical_columns(df: pl.DataFrame) -> pl.DataFrame:
+    long_data = (df
+        .unpivot(
+            index = ["fixture_id", "season", "year", "round_int", "expected_home", "expected_away", "home_goals", "away_goals"], 
+            on = ["home_team_id", "away_team_id"]
+        )
+        .with_columns(
+            pl.when(pl.col("variable") == pl.lit("home_team_id")).then(pl.col("expected_home")).otherwise(pl.col("expected_away")).alias("expected_goals"),
+            pl.when(pl.col("variable") == pl.lit("home_team_id")).then(pl.col("expected_away")).otherwise(pl.col("expected_home")).alias("expected_conceded"),
+            pl.when(pl.col("variable") == pl.lit("home_team_id")).then(pl.col("home_goals")).otherwise(pl.col("away_goals")).alias("actual_goals"),
+            pl.when(pl.col("variable") == pl.lit("home_team_id")).then(pl.col("away_goals")).otherwise(pl.col("home_goals")).alias("actual_conceded"),
+            pl.when(pl.col("variable") == pl.lit("home_team_id")).then(pl.lit(True)).otherwise(pl.lit(False)).alias("is_home")
+        )
+        .rename({"value" : "team_id"})
+        .select(
+            "fixture_id", "season", "year", "round_int", "team_id", "is_home", "expected_goals", "expected_conceded", "actual_goals", "actual_conceded"
+        )
+        .sort(["season", "team_id", "round_int"])
+    )
+
+    cols = ["expected_goals", "expected_conceded", "actual_goals", "actual_conceded"]
+    long_data = (long_data
+        .with_columns(*[
+            [
+                pl.col(c).shift(i).over("season", "team_id").alias(f"{c}_prev{i}")
+                for i in range(1, 5+1)
+            ]
+            for c in cols
+        ])
+        .with_columns([
+            pl.concat_list([pl.col(f"{c}_prev{i}") for i in range(1, 5+1)]).alias(f"{c}_prev_list")
+            for c in cols
+        ])
+        .select("fixture_id", "team_id", *[f"{c}_prev_list" for c in cols])
+    )
+
+    df = (df
+        .join(
+            long_data.rename({"team_id": "home_team_id"}), 
+            how = "left", 
+            on=["fixture_id", "home_team_id"]
+        )
+        .join(
+            long_data.rename({"team_id": "away_team_id"}), 
+            how = "left", 
+            on=["fixture_id", "away_team_id"],
+            suffix="_away"
+        )
+        .rename({f"{col}_prev_list" : f"{col}_prev_list_home" for col in cols})
+    )
+
+    return df
+
 def prepare(
     DB_PATH: str = "football.db",
     K: float = 0.05,
@@ -148,7 +219,10 @@ def prepare(
 ) -> pl.DataFrame:
     """Prepare the dataset by calculating ratings and history."""
     # Load and prepare data
-    fixtures_df = load_fixture_data(DB_PATH)
+    fixtures_df = load_fixture_data(
+        cols = ['fixture_id', 'league_id', 'season', 'date', 'round', 'home_team_id', 'away_team_id', 'home_goals', 'away_goals'],
+        db_path=DB_PATH
+    )
     
     # Initialize ratings
     attack_ratings, defense_ratings = initialize_ratings(fixtures_df)
@@ -163,38 +237,21 @@ def prepare(
     )
     
     # Convert history to DataFrame for analysis
-    history_df = pl.DataFrame(ratings_history)
+    df = pl.DataFrame(ratings_history)
 
     # Add any additional processing
     ## Date Columns
-    history_df = (history_df
-        .with_columns(
-            pl.col("date").str.strptime(pl.Date, format = "%Y-%m-%dT%H:%M:%S%z")
-        )
-        .with_columns(
-            pl.col("date").dt.weekday().alias("day_of_week"),
-            pl.col("date").dt.month().alias("month"),
-            pl.col("date").dt.year().alias("year")
-        )
-    )
+    df = add_date_columns(df, "date")
     
     ## Create integer round
-    history_df = history_df.with_columns(
+    df = df.with_columns(
         pl.col("round").str.split(" - ").list.get(1).cast(pl.Int64).alias("round_int")
     ) 
 
     ## Make historical
-    ### Get
-    """ 
-    history_df = (history_df
-        .sort("")
-        .with_columns(
-            pl.col("expected")
-        )
-    )
-    """
-    
-    return history_df
+    df = add_historical_columns(df)
+
+    return df
 
 
 def push_dataset_to_huggingface(
@@ -329,16 +386,16 @@ This dataset is automatically generated using football match fixtures and update
 
 
 def push(
-    history_df: pl.DataFrame,
+    df: pl.DataFrame,
     HF_REPO_ID: str = "AndyB/football_fixtures",
     HF_TOKEN: str = os.getenv("HF_TOKEN")
 ) -> None:
     """Push the dataset and model card to the Hugging Face Hub."""
     # Write dataset to Hugging Face Hub
-    push_dataset_to_huggingface(history_df, HF_REPO_ID)
+    push_dataset_to_huggingface(df, HF_REPO_ID)
     
     # Push model card (README.md) to Hugging Face Hub
-    push_model_card(history_df, HF_REPO_ID, HF_TOKEN)
+    push_model_card(df, HF_REPO_ID, HF_TOKEN)
 
 
 def prepare_and_push(
@@ -350,7 +407,7 @@ def prepare_and_push(
 ):
     """Main workflow executing the rating calculation process and pushing to HF Hub."""
     # Prepare the dataset
-    history_df = prepare(DB_PATH, K, HOME_ADVANTAGE)
+    df = prepare(DB_PATH, K, HOME_ADVANTAGE)
     
     # Push the dataset and model card to Hugging Face Hub
-    push(history_df, HF_REPO_ID, HF_TOKEN)
+    push(df, HF_REPO_ID, HF_TOKEN)
