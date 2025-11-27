@@ -397,3 +397,10 @@ class FootballPipeline:
             (response_id,)
         )
         self.raw_store.conn.commit()
+
+    def _mark_error(self, response_id: int, error_message: str):
+        self.raw_store.conn.execute(
+            "UPDATE raw_api_responses SET error_info = ? WHERE id = ?",
+            (error_message, response_id)
+        )
+        self.raw_store.conn.commit()

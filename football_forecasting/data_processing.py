@@ -1,5 +1,4 @@
 import polars as pl
-import lightning.pytorch as lit
 
 import math
 import sqlite3
@@ -7,9 +6,8 @@ import subprocess
 import tempfile
 import os
 
-from torch.utils.data import DataLoader
-from datasets import Dataset, load_dataset
-from huggingface_hub import HfApi, upload_file
+from datasets import Dataset
+from huggingface_hub import HfApi
 
 def load_fixture_data(db_path: str) -> pl.DataFrame:
     """Load fixture data from SQLite database and sort chronologically."""
@@ -74,7 +72,7 @@ def process_matches(
 ) -> list[dict]:
     """Process all matches to update ratings and return history."""
     history = []
-    
+
     nums = {id_ : 0 for id_ in attack_ratings.keys()}
     for row in df.iter_rows():
         (fixture_id, league_id, season, date, round_, 
@@ -128,8 +126,20 @@ def process_matches(
             expected_away,
             K
         )
-    
+
     return history
+
+def add_date_columns(df: pl.DataFrame, date_col : str) -> pl.DataFrame:
+    return (df
+        .with_columns(
+            pl.col(date_col).str.strptime(pl.Date, format = "%Y-%m-%dT%H:%M:%S%z")
+        )
+        .with_columns(
+            pl.col(date_col).dt.weekday().alias("day_of_week"),
+            pl.col(date_col).dt.month().alias("month"),
+            pl.col(date_col).dt.year().alias("year")
+        )            
+    )
 
 def prepare(
     DB_PATH: str = "football.db",
@@ -159,7 +169,7 @@ def prepare(
     ## Date Columns
     history_df = (history_df
         .with_columns(
-            pl.col("date").str.strptime(pl.Date, format="%Y-%m-%d")
+            pl.col("date").str.strptime(pl.Date, format = "%Y-%m-%dT%H:%M:%S%z")
         )
         .with_columns(
             pl.col("date").dt.weekday().alias("day_of_week"),
@@ -170,9 +180,20 @@ def prepare(
     
     ## Create integer round
     history_df = history_df.with_columns(
-        pl.col("round").str.slice(-1).cast(pl.Int32).alias("round_int")
+        pl.col("round").str.split(" - ").list.get(1).cast(pl.Int64).alias("round_int")
     ) 
 
+    ## Make historical
+    ### Get
+    """ 
+    history_df = (history_df
+        .sort("")
+        .with_columns(
+            pl.col("expected")
+        )
+    )
+    """
+    
     return history_df
 
 
