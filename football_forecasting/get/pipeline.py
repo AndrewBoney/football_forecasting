@@ -404,3 +404,16 @@ class FootballPipeline:
             (error_message, response_id)
         )
         self.raw_store.conn.commit()
+
+if __name__ == "__main__":
+    api_key = os.getenv("RAPIDAPI_KEY")
+    assert api_key is not None, "RAPIDAPI_KEY environment variable not set"
+    pipeline = FootballPipeline(api_key)
+
+    leagues_to_process = [
+        {'id': 39, 'seasons': [2019, 2020, 2021, 2022, 2023, 2024]},  # Premier League
+        #{'id': 140, 'seasons': [2020, 2021, 2022]}, # La Liga
+    ]
+
+    pipeline.run_collection(leagues_to_process)
+    pipeline.run_processing()

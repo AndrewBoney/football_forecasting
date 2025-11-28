@@ -2,6 +2,10 @@ import lightning.pytorch as lit
 from torch.utils.data import DataLoader
 from datasets import load_dataset
 
+def encode(example, col : str, num_embeddings: int):
+    example[col] = [hash(x) % num_embeddings for x in example[col]]
+    return example
+
 # Data Loading Module
 class FootballDataModule(lit.LightningDataModule):
     def __init__(self, batch_size: int = 32):
@@ -36,7 +40,3 @@ class FootballDataModule(lit.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.batch_size)
-
-# Run Main
-if __name__ == "__main__":
-    prepare_and_push()

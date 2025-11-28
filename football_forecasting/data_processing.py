@@ -179,14 +179,12 @@ def add_historical_columns(df: pl.DataFrame) -> pl.DataFrame:
         .sort(["season", "team_id", "round_int"])
     )
 
-    cols = ["expected_goals", "expected_conceded", "actual_goals", "actual_conceded"]
+    cols = ["is_home", "expected_goals", "expected_conceded", "actual_goals", "actual_conceded"]
     long_data = (long_data
-        .with_columns(*[
-            [
-                pl.col(c).shift(i).over("season", "team_id").alias(f"{c}_prev{i}")
-                for i in range(1, 5+1)
-            ]
+        .with_columns([
+            pl.col(c).shift(i).over("season", "team_id").alias(f"{c}_prev{i}")
             for c in cols
+            for i in range(1, 5+1)
         ])
         .with_columns([
             pl.concat_list([pl.col(f"{c}_prev{i}") for i in range(1, 5+1)]).alias(f"{c}_prev_list")
@@ -411,3 +409,7 @@ def prepare_and_push(
     
     # Push the dataset and model card to Hugging Face Hub
     push(df, HF_REPO_ID, HF_TOKEN)
+
+# Run Main
+if __name__ == "__main__":
+    prepare_and_push()
