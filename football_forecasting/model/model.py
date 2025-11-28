@@ -39,24 +39,90 @@ class PoissonProbabilityModule(nn.Module):
         probabilities = torch.cat([probabilities, tail_prob], dim=1)
         return probabilities
 
-# -------------------------
-# Define the Lightning Module
-# -------------------------
-class PoissonLightningModule(pl.LightningModule):
+
+class BaseModel(pl.LightningModule):
+    """
+    Base LightningModule that contains common functionality for model classes.
+    Shared features:
+    - a dummy trainable parameter so models always have parameters
+    - generic negative log-likelihood helper that maps targets into a tail bin
+    - generic metric computation for multiclass prediction over goal counts
+    - generic optimizer construction using `self.hparams.lr` when available
+    """
+    def __init__(self, max_goals: int = 10, lr: float = 1e-3):
+        super().__init__()
+        # store defaults; child classes should call `self.save_hyperparameters()`
+        # to persist constructor args into `self.hparams` if desired
+        self.max_goals = max_goals
+        self.lr = lr
+
+    def adjust_targets(self, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Map target goal counts greater than `self.max_goals` into the tail bin index.
+
+        Args:
+            targets (Tensor): integer goal counts, shape (batch,)
+
+        Returns:
+            Tensor: adjusted integer targets (same shape) where values > max_goals
+                    are replaced with `max_goals + 1` (the tail bin index).
+        """
+        tail_index = self.max_goals + 1
+        return torch.where(
+            targets > self.max_goals,
+            torch.full_like(targets, tail_index),
+            targets
+        )
+
+    def _nll_loss(self, prob_dist: torch.Tensor, targets: torch.Tensor):
+        targets_adjusted = self.adjust_targets(targets)
+        batch_idx = torch.arange(prob_dist.size(0), device=prob_dist.device)
+        eps = 1e-8  # to avoid log(0)
+        nll = -torch.log(prob_dist[batch_idx, targets_adjusted] + eps)
+        return nll.mean()
+
+    def _compute_metrics(self, probs: torch.Tensor, targets: torch.Tensor, prefix: str):
+        targets_adjusted = self.adjust_targets(targets)
+        preds = torch.argmax(probs, dim=1)
+        metrics = {}
+        num_classes = self.max_goals + 2
+        metrics[f"{prefix}_acc"] = accuracy(
+            preds, targets_adjusted, task="multiclass", num_classes=num_classes
+        )
+        metrics[f"{prefix}_precision"] = precision(
+            preds, targets_adjusted, task="multiclass", num_classes=num_classes, average="macro"
+        )
+        metrics[f"{prefix}_recall"] = recall(
+            preds, targets_adjusted, task="multiclass", num_classes=num_classes, average="macro"
+        )
+        metrics[f"{prefix}_f1"] = f1_score(
+            preds, targets_adjusted, task="multiclass", num_classes=num_classes, average="macro"
+        )
+        return metrics
+
+    def configure_optimizers(self):
+        lr = getattr(self.hparams, 'lr', getattr(self, 'lr', 1e-3))
+        return torch.optim.Adam(self.parameters(), lr=lr)
+
+
+class PoissonModel(BaseModel):
     def __init__(self, max_goals: int = 10, lr: float = 1e-3):
         """
-        LightningModule that uses Poisson probabilities to compute a negative log likelihood loss
+        Model that uses Poisson probabilities to compute a negative log likelihood loss
         and evaluates standard classification metrics.
 
         Args:
             max_goals (int): Maximum number of goals to consider before using the tail bin.
             lr (float): Learning rate.
         """
-        super().__init__()
+        # Initialize base class (creates dummy param and stores max_goals and lr)
+        super().__init__(max_goals=max_goals, lr=lr)
+        # Persist hyperparameters (so `self.hparams.max_goals` and `self.hparams.lr` exist)
         self.save_hyperparameters()
-        self.poisson_module = PoissonProbabilityModule(max_goals=self.hparams.max_goals)
-        # Dummy parameter to ensure the model has a trainable parameter.
+        # Use the BaseModel-stored max_goals for the probability module
+        self.poisson_module = PoissonProbabilityModule(max_goals=self.max_goals)
         self.dummy_param = nn.Parameter(torch.zeros(1))
+
 
     def forward(self, expected_home: torch.Tensor, expected_away: torch.Tensor):
         """
@@ -73,65 +139,7 @@ class PoissonLightningModule(pl.LightningModule):
         away_prob = self.poisson_module(expected_away)
         return home_prob, away_prob
 
-    def _nll_loss(self, prob_dist: torch.Tensor, targets: torch.Tensor):
-        """
-        Computes the negative log likelihood loss for a batch.
-        Targets greater than max_goals are assigned to the extra tail bin.
-
-        Args:
-            prob_dist (Tensor): shape (batch_size, max_goals+2)
-            targets (Tensor): shape (batch_size,) with integer goal counts.
-
-        Returns:
-            Tensor: scalar loss value.
-        """
-        tail_index = self.poisson_module.max_goals + 1
-        targets_adjusted = torch.where(
-            targets > self.poisson_module.max_goals,
-            torch.full_like(targets, tail_index),
-            targets
-        )
-        batch_idx = torch.arange(prob_dist.size(0), device=prob_dist.device)
-        eps = 1e-8  # to avoid log(0)
-        nll = -torch.log(prob_dist[batch_idx, targets_adjusted] + eps)
-        return nll.mean()
-
-    def _compute_metrics(self, probs: torch.Tensor, targets: torch.Tensor, prefix: str):
-        """
-        Computes classification metrics given probability distributions and targets.
-        The prediction is taken as the argmax of the probabilities.
-        Targets above max_goals are mapped to the extra tail bin.
-
-        Args:
-            probs (Tensor): shape (batch_size, max_goals+2)
-            targets (Tensor): shape (batch_size,)
-            prefix (str): prefix for metric names (e.g., "train", "val", "test").
-
-        Returns:
-            dict: a dictionary of metric names and their values.
-        """
-        tail_index = self.poisson_module.max_goals + 1
-        # Adjust targets: any goal count above max_goals goes to tail index.
-        targets_adjusted = torch.where(
-            targets > self.poisson_module.max_goals,
-            torch.full_like(targets, tail_index),
-            targets
-        )
-        preds = torch.argmax(probs, dim=1)
-        metrics = {}
-        metrics[f"{prefix}_acc"] = accuracy(
-            preds, targets_adjusted, task="multiclass", num_classes=self.poisson_module.max_goals+2
-        )
-        metrics[f"{prefix}_precision"] = precision(
-            preds, targets_adjusted, task="multiclass", num_classes=self.poisson_module.max_goals+2, average="macro"
-        )
-        metrics[f"{prefix}_recall"] = recall(
-            preds, targets_adjusted, task="multiclass", num_classes=self.poisson_module.max_goals+2, average="macro"
-        )
-        metrics[f"{prefix}_f1"] = f1_score(
-            preds, targets_adjusted, task="multiclass", num_classes=self.poisson_module.max_goals+2, average="macro"
-        )
-        return metrics
+    # Use BaseModel._nll_loss and BaseModel._compute_metrics directly
 
     def training_step(self, batch, batch_idx):
         expected_home = batch['expected_home']
@@ -193,44 +201,8 @@ class PoissonLightningModule(pl.LightningModule):
             self.log(name, value, prog_bar=True, on_step=False, on_epoch=True)
         return loss
 
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
-        return optimizer
+    # configure_optimizers is provided by BaseModel
 
-# -------------------------
-# Define the Data Module
-# -------------------------
-class FootballDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size: int = 32):
-        """
-        LightningDataModule for the AndyB/football_fixtures dataset.
-        
-        Args:
-            batch_size (int): How many samples per batch.
-        """
-        super().__init__()
-        self.batch_size = batch_size
-
-    def prepare_data(self):
-        # Download the dataset (only executed on 1 process)
-        load_dataset("AndyB/football_fixtures")
-
-    def setup(self, stage=None):
-        # Load the dataset and perform per-example processing.
-        self.dataset = load_dataset("AndyB/football_fixtures")
-
-        self.train_dataset = self.dataset["train"]
-        self.val_dataset = self.dataset["val"]
-        self.test_dataset = self.dataset["test"]
-
-    def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True)
-
-    def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size)
-
-    def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=self.batch_size)
 
 # -------------------------
 # Main training and evaluation script

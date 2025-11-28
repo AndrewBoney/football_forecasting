@@ -1,0 +1,10 @@
+polars
+pandas
+python-dotenv
+datasets
+huggingface-hub
+requests
+tenacity
+torch
+lightning
+torchmetrics

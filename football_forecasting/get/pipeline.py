@@ -398,32 +398,22 @@ class FootballPipeline:
         )
         self.raw_store.conn.commit()
 
-    def _mark_error(self, response_id: int, error: str):
+    def _mark_error(self, response_id: int, error_message: str):
         self.raw_store.conn.execute(
             "UPDATE raw_api_responses SET error_info = ? WHERE id = ?",
-            (error, response_id)
+            (error_message, response_id)
         )
         self.raw_store.conn.commit()
 
-# Example usage
 if __name__ == "__main__":
-    import os
-    from dotenv import load_dotenv
-    load_dotenv()
-    
-    key = os.getenv('API_KEY')
-    assert key is not None
+    api_key = os.getenv("RAPIDAPI_KEY")
+    assert api_key is not None, "RAPIDAPI_KEY environment variable not set"
+    pipeline = FootballPipeline(api_key)
 
-    pipeline = FootballPipeline(api_key=key)
-    
-    # Configure leagues to process
-    league_config = [
-        {'id': 39, 'seasons': [2023, 2022, 2021, 2020, 2019]},  # Premier League
-        #{'id': 140, 'seasons': [2023]}        # La Liga
+    leagues_to_process = [
+        {'id': 39, 'seasons': [2019, 2020, 2021, 2022, 2023, 2024]},  # Premier League
+        #{'id': 140, 'seasons': [2020, 2021, 2022]}, # La Liga
     ]
-    
-    # Run data collection
-    pipeline.run_collection(league_config)
-    
-    # Process raw data
+
+    pipeline.run_collection(leagues_to_process)
     pipeline.run_processing()
